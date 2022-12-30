@@ -8,7 +8,7 @@ const uint16_t Heat_Arm = 28; // How long to wait after a heater pulse before ar
 
 // Setup other variables and arrays
 const float V_per_lsb_BATT = (51.7F/4.7F) * (3.0F/4096.0F); //convert ADC value to volts for battery rail
-volatile float V_BATT; // Setup 12V voltage reading variable
+volatile float V_BATT; // Setup battery voltage reading variable
 volatile float PWM_Scale; // Setup PWM scaling variable
 volatile int PWM_Value; // Setup PWM value variable
 volatile bool startPWM_flag = false;
@@ -69,8 +69,12 @@ void StartPWM(){
 
   HwPWM0.addPin(HT_CTL);
   HwPWM0.begin();
+  // how to calc freq of PWM:
+  // Freq = 1/((PRESCALER_DIV)/16000000 * 2^(PWM_Resolution))
+  // example PWM_PRESCALER_PRESCALER_DIV_1 and setResolution(14):
+  // 1/(1/16,000,000 * 2^14) = 977Hz (1.024ms)
   HwPWM0.setResolution(14);
-  HwPWM0.setClockDiv(PWM_PRESCALER_PRESCALER_DIV_1); //4 = 122hz
+  HwPWM0.setClockDiv(PWM_PRESCALER_PRESCALER_DIV_1); // (980hz measured 1.02ms)
   HwPWM0.writePin(HT_CTL, PWM_Value, false);
   startPWM_flag = false;
 }
