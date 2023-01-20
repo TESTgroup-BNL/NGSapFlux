@@ -4,12 +4,11 @@ library(lubridate)
 library(plyr)
 library(hms)
 library(stats)
-library(rqdatatable)
 
 rm(list=ls())
 setwd("~/Desktop")
-Path_A <- "~/Google Drive/TESTgroup/Projects/BRF-SBU/SapFlux/Data/BoxA" #file path to data source, using BRF data for testing
-
+Path_A <- "~/Desktop/SapFlux_Data/AL" #file path to data source, using AL data for testing
+Path_B <- "~/Desktop/SapFlux_Data/BRF" #file path to data source, using BRF data for testing
 #### Functions ####
 
 # Converts from resistance to temp in deg C 
@@ -24,8 +23,9 @@ getmode <- function(v) {
   uniqv[which.max(tabulate(match(v, uniqv)))]
 } 
 
+
 # Set up to run for each CR1000 box's data in a separate directory. Can be changed to process all boxes from one directory preferred
-load_Data <- function(filepath, Origin_DateTime){
+load_Data <- function(filepath, Origin_DateTime="2000-01-01 01:00:00", End_DateTime="2030-01-01 01:00:00"){
   ls_files <- list.files(path=filepath, full.names = T) 
   Header <- read.csv(file=ls_files[1], header = F, skip=1,nrows = 1, as.is = T)
   BoxA=do.call("rbind.fill", apply(X = as.matrix(ls_files),FUN = read.csv,MARGIN = 1, skip=4,header=F))
@@ -35,13 +35,22 @@ load_Data <- function(filepath, Origin_DateTime){
                    "TREE3_TH3", "TREE4_TH3", "TREE5_TH3", "HT_START") # stock names for sapflux data frames
   to_convert <- grep("TREE", names(BoxA))
   BoxA$TIMESTAMP <- ymd_hms(BoxA$TIMESTAMP, tz="UTC")
-  BoxA$Date <- date(BoxA$TIMESTAMP)
-  BoxA$Time <- as_hms(BoxA$TIMESTAMP)
-  BoxA <- BoxA[BoxA$TIMESTAMP >=Origin_DateTime,]
-  BoxA <- BoxA[complete.cases(BoxA), ]
+  BoxA <- BoxA[BoxA$TIMESTAMP >=as.POSIXct(Origin_DateTime,tz="UTC"),]
+  BoxA <- BoxA[BoxA$TIMESTAMP <as.POSIXct(End_DateTime,tz="UTC"),]
+  #BoxA <- BoxA[complete.cases(BoxA), ]
   BoxA[to_convert] <- lapply(BoxA[to_convert], as.numeric)
   BoxA[to_convert] <- lapply(BoxA[to_convert], convert_temp)
+  BoxA$Date <- date(BoxA$TIMESTAMP)
+  BoxA <- BoxA[!is.na(BoxA$Date),]
+  Full_Time_Range <- data.frame(TIMESTAMP=as.POSIXct(paste0(rep(unique(BoxA$Date), each=68400)," ", format(seq(as.POSIXct("00:00:01", format = "%T"), as.POSIXct("23:59:59", format = "%T"), by = "1 sec"), "%H:%M:%S")),tz="UTC"))
+  Full_Time_Range$min <- minute(Full_Time_Range$TIMESTAMP)
+  Full_Time_Range <- Full_Time_Range[Full_Time_Range$min %in% c(0:14,30:44),]
+  `%notin%` <- Negate(`%in%`)
+  New_Dates <- data.frame(TIMESTAMP=Full_Time_Range[which(Full_Time_Range$TIMESTAMP %notin% BoxA$TIMESTAMP),"TIMESTAMP"])
+  BoxA <- merge(BoxA,New_Dates, by="TIMESTAMP", all.x = T, all.y = T)
+  BoxA$Date <- date(BoxA$TIMESTAMP)
   BoxA$Min <- minute(BoxA$TIMESTAMP)
+  BoxA$Time <- as_hms(BoxA$TIMESTAMP)
   BoxA$Baseline <- BoxA$Min %in% c(0,1,2,30,31,32)
   BoxA$Heat <- BoxA$Min %in% c(3,4,33,34)
   BoxA$Pulse <- as.factor(paste0(hour(BoxA$Time),"_",minute(round_date(BoxA$TIMESTAMP, "30 minutes"))))
@@ -51,7 +60,7 @@ load_Data <- function(filepath, Origin_DateTime){
   
 }
 
-# Course QAQC processing. Identifies outliers and flags if data are messy by time period (e.g., 12:00:00-12:01:59) based on number of errant observations. Also detects if heater fired. Data returned as TRUE indicates an error 
+#Course QAQC processing. Identifies outliers and flags if data are messy by time period (e.g., 12:00:00-12:01:59) based on number of errant observations. Also detects if heater fired. Data returned as TRUE indicates an error 
 # This function is VERY SLOW, can be run in parallel to speed up
 Sanity_Check_Corse <- function(df,Dates=unique(df$Date),Pre_Threshold_Temp=0.5,Pre_Threshold_Num=20, Post_Threshold_Temp=5, Post_Threshold_Num=10, HT_Temp=0.5){
   QC_Pre <- data.frame(Date= rep(as.character(Dates), each=48), 
@@ -89,7 +98,7 @@ Sanity_Check_Corse <- function(df,Dates=unique(df$Date),Pre_Threshold_Temp=0.5,P
   return(QAQC)
 } 
 
-# Fine QAQC processing. Identifies outliers and flags if data are messy by individual point. Data returned as TRUE indicates an error 
+#Fine QAQC processing. Identifies outliers and flags if data are messy by individual point. Data returned as TRUE indicates an error 
 # This function is VERY SLOW, can be run in parallel to speed up
 Sanity_Check_Fine <- function(df,Dates=unique(df$Date),Pre_Threshold_Temp=0.5, Post_Threshold_Temp=5){
   QC_Pre <- data.frame(Date= rep(as.character(Dates), each=48*180), 
@@ -111,16 +120,31 @@ Sanity_Check_Fine <- function(df,Dates=unique(df$Date),Pre_Threshold_Temp=0.5, P
         QC_Post[QC_Post$Date==j &QC_Post$Pulse==k,3:17]  <- TRUE
         
       }else{
-        QC_Pre[QC_Pre$Date==j &QC_Pre$Pulse==k,3:17] <- df[df$Date==j &df$Pulse==k&df$Baseline==T,3:17]>= matrix(rep(t(data.frame(MODE_Pre+Pre_Threshold_Temp)),180), nrow=180,byrow = T)|df[df$Date==j &df$Pulse==k&df$Baseline==T,3:17]<=matrix(rep(t(data.frame(MODE_Pre-Pre_Threshold_Temp)),180), nrow=180,byrow = T)
-        QC_Post[QC_Post$Date==j &QC_Post$Pulse==k,3:17]  <- df[df$Date==j &df$Pulse==k&df$Baseline==F,3:17]>=matrix(data= rep(MODE_Post+Post_Threshold_Temp,720),ncol=15, byrow=T)|df[df$Date==j &df$Pulse==k&df$Baseline==F,3:17]<=matrix(data= rep(MODE_Post-Post_Threshold_Temp,720),ncol=15, byrow=T)
+        QC_Pre[QC_Pre$Date==j &QC_Pre$Pulse==k,3:17] <- df[df$Date==j &df$Pulse==k&df$Baseline==T,3:17]>= matrix(rep(t(data.frame(MODE_Pre+Pre_Threshold_Temp)),length(df[df$Date==j &df$Pulse==k&df$Baseline==T,3])), ncol=15,byrow = T)|df[df$Date==j &df$Pulse==k&df$Baseline==T,3:17]<=matrix(rep(t(data.frame(MODE_Pre-Pre_Threshold_Temp)),length(df[df$Date==j &df$Pulse==k&df$Baseline==T,3])), ncol=15,byrow = T)
+        QC_Post[QC_Post$Date==j &QC_Post$Pulse==k,3:17]  <- df[df$Date==j &df$Pulse==k&df$Baseline==F,3:17]>=matrix(data= rep(MODE_Post+Post_Threshold_Temp,length(df[df$Date==j &df$Pulse==k&df$Baseline==F,3])),ncol=15, byrow=T)|df[df$Date==j &df$Pulse==k&df$Baseline==F,3:17]<=matrix(data= rep(MODE_Post-Post_Threshold_Temp,length(df[df$Date==j &df$Pulse==k&df$Baseline==F,3])),ncol=15, byrow=T)
       }
     }}
   QAQC <- list(QC_Pre,QC_Post)
   return(QAQC)
 } 
 
-# Not working yet.... Need to figure out how to replace values in df with NA when values in Pre_QAQC_df are TRUE
-QAQC_Remove <- function(df,Pre_QAQC_df,Post_QAQC_df){}
+
+# Replaces values that were flagged in the fine QAQC with NA
+QAQC_Remove <- function(df,Pre_QAQC_df,Post_QAQC_df){
+  Z <- (sapply(Pre_QAQC_df[3:17],which))
+  X <- as.list(as.data.frame(sapply(Post_QAQC_df[3:17],which)))
+  df_1 <- df[df$Baseline==T,]
+  df_2 <- df[df$Baseline==F,]
+  for (i in colnames(df_1[,3:17])){
+    df_1[,i][Z[[i]]] <- NA
+  }
+  
+  for (i in colnames(df_2[,3:17])){
+    df_2[,i][X[[i]]] <- NA
+  }
+  df_3 <- rbind(df_1,df_2)
+  return(df_3)
+}
 
 # Helper function for Heat_Dis_Spline
 Spline_Fit <- function(Y_vals,X_vals=Z$TIMESTAMP, X_Vals_New=X){
@@ -131,7 +155,8 @@ Spline_Fit <- function(Y_vals,X_vals=Z$TIMESTAMP, X_Vals_New=X){
 }
 
 # Finds the baseline temp before the heat pulse, the average increase in temperature from the baseline for a given period to time (30-180 sec post heat by default), the time of peak heating, and the time at which the heat returns to baseline
-# This function requires removal of outlier points in the preheat phase. Otherwise the spline will not work
+#This function requires removal of outlier points in the preheat phase. Otherwise the spline will not work
+#This function requires that all
 Heat_Dis_Spline <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
   Baseline <- data.frame(Date= rep(as.character(Dates), each=48), 
                          Pulse= rep(c('P01','P02','P03','P04','P05','P06','P07','P08','P09','P10','P11','P12','P13','P14','P15','P16','P17','P18','P19','P20','P21','P22','P23','P24',
@@ -172,7 +197,11 @@ Heat_Dis_Spline <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
       Heat_Increase[Heat_Increase$Date==as_date(j)&Heat_Increase$Pulse==k, 3:17] <- colMeans(Z- X)
       
       X <- sapply(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,3:17],which.max)
-      Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- as.character(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,"TIMESTAMP"][X])
+      if(identical(X[[1]], integer(0))){
+        Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- NA
+      }else{
+        Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- as.character(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,"TIMESTAMP"][X])
+      }
       
       Y1 <- c()
       for (i in 3:17){ 
@@ -192,7 +221,7 @@ Heat_Dis_Spline <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
 } 
 
 # Finds the baseline temp before the heat pulse, the average increase in temperature from the baseline for a given period to time (30-180 sec post heat by default), the time of peak heating, and the time at which the heat returns to baseline
-# This function is robust to outlier points, but may not capture diurnal heating trends (i.e., assumes baseline is the same for pre and post heat)
+#This function is robust to outlier points, but may not capture diurnal heating trends (i.e., assumes baseline is the same for pre and post heat)
 Heat_Dis_Mode <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
   Baseline <- data.frame(Date= rep(as.character(Dates), each=48), 
                          Pulse= rep(c('P01','P02','P03','P04','P05','P06','P07','P08','P09','P10','P11','P12','P13','P14','P15','P16','P17','P18','P19','P20','P21','P22','P23','P24',
@@ -219,10 +248,13 @@ Heat_Dis_Mode <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
       X <- matrix(data=unlist(rep(Baseline[Baseline$Date==as_date(j)&Baseline$Pulse==k,3:17], length(Time_Post_Heat))),ncol=15,byrow = T)
       Heat_Increase[Heat_Increase$Date==as_date(j)&Heat_Increase$Pulse==k, 3:17] <- colMeans(Z- X)
       
-      
-      
       X <- sapply(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,3:17],which.max)
-      Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- as.character(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,"TIMESTAMP"][X])
+      if(identical(X[[1]], integer(0))){
+        Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- NA
+      }else{
+        Heat_time[Heat_time$Date==as_date(j)&Heat_time$Pulse==k, 3:17] <- as.character(df[df$Date==as_date(j)& df$Pulse==k&df$Baseline==F,"TIMESTAMP"][X])
+      }  
+      
       
       Y1 <- c()
       for (i in 3:17){ 
@@ -241,7 +273,7 @@ Heat_Dis_Mode <- function(df,Dates=unique(df$Date),Time_Post_Heat=c(30:180)){
   return(Heat_Dis_Data)
 } 
 
-# Solves the HRM equations for sensors 1 and 2. K can either as a vector or assumed
+#Solves the HRM equations for sensors 1 and 2. K can either as a vector or assumed
 Solve_HRM <- function(df,Dates=unique(df$Date),K=rep(0.0025,5)){
   HRM <- data.frame(Date= rep(as.character(Dates), each=48), 
                     Pulse= rep(c('P01','P02','P03','P04','P05','P06','P07','P08','P09','P10','P11','P12','P13','P14','P15','P16','P17','P18','P19','P20','P21','P22','P23','P24',
@@ -257,3 +289,78 @@ Solve_HRM <- function(df,Dates=unique(df$Date),K=rep(0.0025,5)){
   return(HRM)
 } 
 
+
+#### Example runs using data from AL and BRF  #####
+
+#Note to user, the CR1000 data files start at 00:00:01 and end at 00:00:00 on the following day. Need to load at least two files for a full 24 run. Otherwise the functions will not work
+BoxA <- load_Data(Path_A)
+BoxB <- load_Data(Path_B,Origin_DateTime="2022-10-04 00:00:00",End_DateTime = "2022-10-04 23:59:59")
+
+
+
+ggplot(BoxB, aes(Time, TREE1_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE1_TH2,color="middle"))+geom_point(aes(Time, TREE1_TH3,color="top"))+ggtitle("Tree 1")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB, aes(Time, TREE2_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE2_TH2,color="middle"))+geom_point(aes(Time, TREE2_TH3,color="top"))+ggtitle("Tree 2")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB, aes(Time, TREE3_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE3_TH2,color="middle"))+geom_point(aes(Time, TREE3_TH3,color="top"))+ggtitle("Tree 3")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB, aes(Time, TREE4_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE4_TH2,color="middle"))+geom_point(aes(Time, TREE4_TH3,color="top"))+ggtitle("Tree 4")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB, aes(Time, TREE5_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE5_TH2,color="middle"))+geom_point(aes(Time, TREE5_TH3,color="top"))+ggtitle("Tree 5")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+
+A <- Sanity_Check_Corse(BoxB)
+QC_Pre <- A[[1]]
+QC_Post <- A[[2]]
+QC_HT <- A[[3]]
+
+B <- Sanity_Check_Fine(BoxB)
+QC_Pre_Fine <- B[[1]]
+QC_Post_Fine <- B[[2]]
+
+BoxB_QAQC <- QAQC_Remove(BoxB,QC_Pre_Fine,QC_Post_Fine)
+
+ggplot(BoxB_QAQC, aes(Time, TREE1_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE1_TH2,color="middle"))+geom_point(aes(Time, TREE1_TH3,color="top"))+ggtitle("Tree 1")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB_QAQC, aes(Time, TREE2_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE2_TH2,color="middle"))+geom_point(aes(Time, TREE2_TH3,color="top"))+ggtitle("Tree 2")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB_QAQC, aes(Time, TREE3_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE3_TH2,color="middle"))+geom_point(aes(Time, TREE3_TH3,color="top"))+ggtitle("Tree 3")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB_QAQC, aes(Time, TREE4_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE4_TH2,color="middle"))+geom_point(aes(Time, TREE4_TH3,color="top"))+ggtitle("Tree 4")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+ggplot(BoxB_QAQC, aes(Time, TREE5_TH1))+ geom_point(aes(color="bottom"))+geom_point(aes(Time, TREE5_TH2,color="middle"))+geom_point(aes(Time, TREE5_TH3,color="top"))+ggtitle("Tree 5")+
+  scale_color_manual(name = "sensor",values = c( "top" = "blue", "middle" = "red", "bottom" = "black"),
+                     labels = c("top", "middle", "bottom"))
+
+C <- Heat_Dis_Spline(BoxB_QAQC)
+Baseline <- C[[1]]
+Heat_Increase_spline <- C[[2]]
+Heat_Pulse <- C[[3]]
+Cool_Time <- C[[4]]
+
+D <- Heat_Dis_Mode(BoxB_QAQC)
+Baseline <- D[[1]]
+Heat_Increase <- D[[2]]
+Heat_Pulse <- D[[3]]
+Cool_Time <- D[[4]]
+
+
+E <- Solve_HRM(Heat_Increase_spline)
+ggplot(E, aes(Pulse,TREE3))+geom_point()+ylab("Vh; cm hr-1")
+ggplot(E, aes(Pulse,TREE4))+geom_point()+ylab("Vh; cm hr-1")
+ggplot(E, aes(Pulse,TREE5))+geom_point()+ylab("Vh; cm hr-1")
+
+
+.F <- Solve_HRM(Heat_Increase)
+ggplot(.F, aes(Pulse,TREE3))+geom_point()+ylab("Vh; cm hr-1")
+ggplot(.F, aes(Pulse,TREE4))+geom_point()+ylab("Vh; cm hr-1")
+ggplot(.F, aes(Pulse,TREE5))+geom_point()+ylab("Vh; cm hr-1")
