@@ -41,3 +41,6 @@ vignettes/*.pdf
 # MacOSX Chaff
 .DS_Store
 ._*
+
+# VSCode
+*.vscode/
