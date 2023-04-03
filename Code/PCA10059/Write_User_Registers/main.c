@@ -4,8 +4,10 @@
 #include "nrf_delay.h"
 
 ///////////////////////////// User Defined Varibles /////////////////////////////////////
+// Erase UICR
+const bool erase_UICR = false;  // Requires reloading of bootloader
 // Site number
-const uint8_t Site = 5;
+const uint8_t Site = 1; // was 5
 // Subsite number
 const uint8_t Sub_Site = 2;
 // Tree
@@ -40,7 +42,31 @@ uint32_t Heat_Code_Reg ;
 
 ///////////////////////////// Functions /////////////////////////////////////////////////
 
-static void Write_UICR(uint32_t Reg0, uint32_t Reg1){
+static void Write_UICR(uint32_t Reg0, uint32_t Reg1, bool erase){
+  if(erase){
+     // Set NVMC to erase
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
+
+    // Wait for NVMC to finish
+    while(NRF_NVMC->READY == NVMC_READY_READY_Busy){}
+    // Erase UICR
+    NRF_NVMC->ERASEUICR = NVMC_ERASEUICR_ERASEUICR_Erase << NVMC_ERASEUICR_ERASEUICR_Pos;
+
+    // Wait for NVMC to finish
+    while(NRF_NVMC->READY == NVMC_READY_READY_Busy){}
+    // Set NVMC to read-only
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+
+    // Wait for NVMC to finish
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy){}
+    // Reset NVIC
+    NVIC_SystemReset();
+
+    bsp_board_init(BSP_INIT_LEDS);
+    bsp_board_init(BSP_INIT_BUTTONS);
+
+
+  }
   // Write to Reg if not already written
   if(NRF_UICR->CUSTOMER[0] == 0xFFFFFFFF){
     // Set NVMC to write
@@ -118,7 +144,7 @@ void setup(void){
 int main(void){
   setup();
   // Write to UICR
-  Write_UICR(Tree_Code, Heat_Code);
+  Write_UICR(Tree_Code, Heat_Code, erase_UICR);
 
   // wait
   nrf_delay_ms(1000);

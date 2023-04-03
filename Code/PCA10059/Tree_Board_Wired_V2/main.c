@@ -51,7 +51,8 @@
 #include "app_timer.h"
 #include "nrf_sortlist.h"
 #include "nrfx_pwm.h"
-
+#include "SAADC.c"
+#include "PWM.c"
 
 ///////////////////////////// User Defined Varibles /////////////////////////////////////
 // Min Voltage before disabling heater and giving error
@@ -125,7 +126,6 @@ uint8_t hundredths ;
 uint32_t Heat_Code ;
 uint32_t HT_Wait_Time;
 
-
 volatile bool waiting = false;
 volatile bool sleep = false;
 volatile bool Heater_Armed = false;
@@ -138,16 +138,19 @@ APP_TIMER_DEF(Sleep);
 APP_TIMER_DEF(HT_Wait);
 
 volatile bool Button_int = false;
-static nrfx_pwm_t m_pwm0 = NRFX_PWM_INSTANCE(0);
+/////////////////////////////////////////////////////////////////////////////////////////
+
 /////////////////////////// Functions ////////////////////////////////////////
 
 void Button_ISR(nrfx_gpiote_pin_t pin, nrf_gpiote_polarity_t action){
     Button_flag = true;
+    HT_Start=true;
 }
 
 void HT_Sig_ISR(nrfx_gpiote_pin_t pin, nrf_gpiote_polarity_t action){
     if(Heater_Armed){
         HT_Start=true;
+        nrf_gpio_pin_write(LED2_B, true);
     }
 }
 
@@ -157,12 +160,12 @@ void HT_Wait_ISR(void * p_contex){
 
 void Heater_Arm_ISR(void * p_contex){
     Heater_Armed = true;
+    nrf_gpio_pin_write(LED2_B, false);
 }
 
 void sleep_timeout_ISR(void * p_contex){
     sleep = false;
 }
-
 
 void HFCLK_int(){
     NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
@@ -185,104 +188,6 @@ void LFCLK_int(){
     {
         // Do nothing.
     }
-}
-
-void PWM_int(){
-    nrfx_pwm_config_t const config0 =
-    {
-        .output_pins =
-        {
-            HT_CTL,
-            LED1_G | NRFX_PWM_PIN_INVERTED,     // channel 1
-            NRFX_PWM_PIN_NOT_USED,             // channel 2
-            NRFX_PWM_PIN_NOT_USED,             // channel 3
-        },
-        .irq_priority = APP_IRQ_PRIORITY_LOWEST,
-        .base_clock   = PWM_Prescaler,
-        .count_mode   = NRF_PWM_MODE_UP,
-        .top_value    = CounterTop,
-        .load_mode    = NRF_PWM_LOAD_COMMON,
-        .step_mode    = NRF_PWM_STEP_AUTO
-    };
-    nrfx_pwm_init(&m_pwm0, &config0, NULL);
-    //nrfx_pwm_init(&m_pwm0, &config0, PWM_ISR)
-}
-
-void start_pwm(){
-    // This array cannot be allocated on stack (hence "static") and it must
-    // be in RAM (hence no "const", though its content is not changed).
-    uint16_t seq_values[] = {PWM_Value} ;
-    nrf_pwm_sequence_t const seq =
-    {
-        .values.p_common = seq_values,
-        .length          = NRF_PWM_VALUES_LENGTH(seq_values),
-        .repeats         = 0,
-        .end_delay       = 0
-    };
-
-    (void)nrfx_pwm_simple_playback(&m_pwm0, &seq, Heat_CNT, NRFX_PWM_FLAG_STOP);
-}
-
-uint32_t saadc_read(){
-    static uint32_t output;
-
-    NRF_SAADC->RESOLUTION = SAADC_RESOLUTION_VAL_12bit << SAADC_RESOLUTION_VAL_Pos;
-    NRF_SAADC->OVERSAMPLE = SAADC_OVERSAMPLE_OVERSAMPLE_Bypass << SAADC_OVERSAMPLE_OVERSAMPLE_Pos;
-    NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Enabled << SAADC_ENABLE_ENABLE_Pos;
-    NRF_SAADC->CH[0].CONFIG = SAADC_CH_CONFIG_RESP_Bypass << SAADC_CH_CONFIG_RESP_Pos |
-                                SAADC_CH_CONFIG_RESN_Bypass << SAADC_CH_CONFIG_RESN_Pos |
-                                SAADC_CH_CONFIG_GAIN_Gain1_5 << SAADC_CH_CONFIG_GAIN_Pos |
-                                SAADC_CH_CONFIG_REFSEL_Internal << SAADC_CH_CONFIG_REFSEL_Pos |
-                                SAADC_CH_CONFIG_TACQ_40us << SAADC_CH_CONFIG_TACQ_Pos|
-                                SAADC_CH_CONFIG_MODE_SE << SAADC_CH_CONFIG_MODE_Pos |
-                                SAADC_CH_CONFIG_BURST_Disabled << SAADC_CH_CONFIG_BURST_Pos;
-    NRF_SAADC->CH[0].PSELP = SAADC_CH_PSELP_PSELP_AnalogInput0 << SAADC_CH_PSELP_PSELP_Pos;
-
-    NRF_SAADC->RESULT.PTR = (uint32_t)&output;
-    NRF_SAADC->RESULT.MAXCNT = 1U;
-
-    // Calibrate the SAADC
-    NRF_SAADC->EVENTS_CALIBRATEDONE = 0U;
-    NRF_SAADC->TASKS_CALIBRATEOFFSET = 1U;
-    while (NRF_SAADC->EVENTS_CALIBRATEDONE == 0U){
-        //wait
-    }
-
-    while (NRF_SAADC->STATUS == (SAADC_STATUS_STATUS_Busy << SAADC_STATUS_STATUS_Pos)){
-        //wait
-    }
-
-    NRF_SAADC->EVENTS_STOPPED = 0U;
-    NRF_SAADC->TASKS_STOP = 1;
-    while (NRF_SAADC->EVENTS_STOPPED == 0){
-        //wait
-    }
- 
-    //Start SAADC
-    NRF_SAADC->EVENTS_STARTED = 0U;
-    NRF_SAADC->TASKS_START = 1U;
-    while(NRF_SAADC->EVENTS_STARTED == 0U){
-        //wait
-    }
-
-    //Sample
-    NRF_SAADC->EVENTS_END = 0U;
-    NRF_SAADC->TASKS_SAMPLE = 1U;
-    while(NRF_SAADC->EVENTS_END == 0U){
-        //wait
-    }
-
-    //Stop SAADC
-    NRF_SAADC->EVENTS_STOPPED = 0U;
-    NRF_SAADC->TASKS_STOP = 1U;
-    while(NRF_SAADC->EVENTS_STOPPED == 0U){
-        //wait
-    }
-
-    //Disable SAADC
-    NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
-
-    return(output);
 }
 
 void Sleep_Time(uint16_t sleep_ms){
@@ -358,7 +263,7 @@ void setup(){
     nrf_gpio_pin_write(LED2_B, true);
 
     //setup PWM
-    PWM_int();
+    PWM_int(HT_CTL, PWM_Prescaler, CounterTop);
     
     //setup timers
     app_timer_init();
@@ -426,7 +331,7 @@ int main(void){
                     }
                 }
                 // start heater
-                start_pwm();
+                start_pwm(PWM_Value, Heat_CNT);
                 //nrf_gpio_pin_toggle(LED1_G);
             } else {
                 nrf_gpio_pin_write(LED2_R, false);
@@ -466,7 +371,6 @@ int main(void){
             Sleep_Time(5000);
             
             Button_flag = false;
-
         }
         // wait for interupt
         __WFI();
