@@ -126,6 +126,9 @@ uint8_t hundredths ;
 uint32_t Heat_Code ;
 uint32_t HT_Wait_Time;
 
+int volatile * const Site_Code_Reg = (int *) 0xDF000UL;
+int volatile * const Resist_Code_Reg = (int *) 0xDF004UL;
+
 volatile bool waiting = false;
 volatile bool sleep = false;
 volatile bool Heater_Armed = false;
@@ -144,7 +147,7 @@ volatile bool Button_int = false;
 
 void Button_ISR(nrfx_gpiote_pin_t pin, nrf_gpiote_polarity_t action){
     Button_flag = true;
-    HT_Start=true;
+    //HT_Start=true;
 }
 
 void HT_Sig_ISR(nrfx_gpiote_pin_t pin, nrf_gpiote_polarity_t action){
@@ -225,8 +228,8 @@ void setup(){
     NRF_POWER->TASKS_LOWPWR = POWER_TASKS_LOWPWR_TASKS_LOWPWR_Trigger << POWER_TASKS_LOWPWR_TASKS_LOWPWR_Pos;
 
     // Read UICR
-    Tree_Code = ~NRF_UICR->CUSTOMER[0];
-    Heat_Code = ~NRF_UICR->CUSTOMER[1];
+    Tree_Code = ~*Site_Code_Reg;
+    Heat_Code = ~*Resist_Code_Reg;
 
     // Decode Tree Code
     Site = Decode(Tree_Code, 6, 0x7);
